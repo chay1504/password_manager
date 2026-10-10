@@ -46,4 +46,4 @@ Source and automated-test review plus one real-browser run. **Not an independent
 
 ## Not yet verified
 - Real iPhone and Android install, offline use through the service worker, share-sheet backup, app-switcher behaviour.
-- Hosting must actually send the security headers (generated in `dist/*/vercel.json` and `_headers`).
+- Hosting must actually send the security headers (`web/vercel.json` for Git-linked Vercel projects, or the generated `dist/*/vercel.json` and `_headers` for manual deployment).
