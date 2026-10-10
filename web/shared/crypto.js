@@ -13,7 +13,6 @@ import {
   toB64,
 } from './util.js';
 
-export const LOCAL_KDF = { m: 65536, t: 3, p: 1 }; // 64 MiB, 3 passes
 export const BACKUP_KDF = { m: 65536, t: 3, p: 1 };
 const KDF_LIMITS = { mMin: 8192, mMax: 262144, tMin: 1, tMax: 10 };
 
@@ -64,61 +63,39 @@ async function decrypt(key, nonce, cipherText, mac, aad) {
       await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad }, key, sealed),
     );
   } catch {
-    throw new UserError('Wrong passphrase, or the data was changed');
+    throw new UserError('Wrong password or key, or the data was changed');
   }
 }
 
-/* ---------- Local records: one passphrase, key kept only in memory ---------- */
+/* ------- Local records: sealed with a key that face unlock provides ------- */
 
-/**
- * Derives a session from a passphrase. The key is non-extractable, so the raw
- * bytes are never exposed to page code after derivation.
- */
-export async function newSession(passphrase, kdf = LOCAL_KDF) {
-  const salt = randomBytes(16);
-  return { key: await deriveKey(passphrase, salt, kdf), kdf: { ...kdf }, salt };
+/** A random AES key the browser will never hand back to page code. */
+export function newDeviceKey() {
+  return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 
-export async function seal(session, format, object) {
-  const aad = encoder.encode(format);
+export async function sealWithKey(key, format, object) {
   const { nonce, cipherText, mac } = await encrypt(
-    session.key,
+    key,
     encoder.encode(JSON.stringify(object)),
-    aad,
+    encoder.encode(format),
   );
   const body = new Uint8Array(cipherText.length + mac.length);
   body.set(cipherText);
   body.set(mac, cipherText.length);
-  return {
-    format,
-    kdf: { alg: 'argon2id', ...session.kdf },
-    salt: toB64(session.salt),
-    nonce: toB64(nonce),
-    ct: toB64(body),
-  };
+  return { format, nonce: toB64(nonce), ct: toB64(body) };
 }
 
-function readRecord(record, format) {
+/** Throws FormatException for an unknown record, UserError if the key does not fit. */
+export async function openWithKey(key, record, format) {
   if (record === null || typeof record !== 'object' || record.format !== format) {
     throw new FormatException('Unsupported record');
   }
-  const { alg, m, t, p } = record.kdf ?? {};
-  if (alg !== 'argon2id') throw new FormatException('Unsupported key settings');
-  const salt = fromB64(record.salt);
   const nonce = fromB64(record.nonce);
   const body = fromB64(record.ct);
-  if (salt.length !== 16 || nonce.length !== 12 || body.length < 16) {
-    throw new FormatException('Invalid record');
-  }
-  return { kdf: { m, t, p }, salt, nonce, body };
-}
-
-/** Returns { session, object }. Throws UserError for a wrong passphrase. */
-export async function open(record, format, passphrase) {
-  const { kdf, salt, nonce, body } = readRecord(record, format);
-  const key = await deriveKey(passphrase, salt, kdf);
+  if (nonce.length !== 12 || body.length < 16) throw new FormatException('Invalid record');
   const plain = await decrypt(key, nonce, body.slice(0, -16), body.slice(-16), encoder.encode(format));
-  return { session: { key, kdf, salt }, object: JSON.parse(decoder.decode(plain)) };
+  return JSON.parse(decoder.decode(plain));
 }
 
 /* ---------------------------- Backup files ---------------------------- */

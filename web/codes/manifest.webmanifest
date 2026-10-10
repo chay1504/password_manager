@@ -2,7 +2,7 @@
   "id": "./",
   "name": "TBD Codes",
   "short_name": "TBD Codes",
-  "description": "Changing eight-digit codes for TBD Vault. Everything stays on your device.",
+  "description": "Changing eight-digit codes. Everything stays on your device.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

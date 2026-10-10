@@ -1,39 +1,41 @@
 // TBD Vault logic, independent of the screen so it can be tested.
-// Phases: loading -> setup | locked -> code -> open   (same flow as the native apps)
+// Phases: loading -> setup | locked | legacy -> code -> open
+// The vault is unlocked by face lock, then by a current 8-digit code.
 import {
-  BACKUP_KDF, LOCAL_KDF, checkBackupPassword, createBackup, newSession, open, restoreBackup, seal,
+  BACKUP_KDF, checkBackupPassword, createBackup, openWithKey, restoreBackup, sealWithKey,
 } from '../shared/crypto.js';
 import { AttemptLimiter } from '../shared/limiter.js';
 import { backupOutdated, newVault, validateVault } from '../shared/model.js';
-import { DEFAULT_PERIOD, MAX_PERIOD, MIN_PERIOD, verify } from '../shared/otp.js';
+import { DEFAULT_PERIOD, verify } from '../shared/otp.js';
 import { encodePairing } from '../shared/pairing.js';
-import { UserError, charCount, fromB64, randomBytes, toB64 } from '../shared/util.js';
+import { UserError, fromB64, randomBytes, toB64 } from '../shared/util.js';
 
-export const FORMAT = 'TBD-WEB-VAULT-v1';
-export const MIN_PASSPHRASE = 12;
+export const FORMAT = 'TBD-WEB-VAULT-v2';
 const RECORD_KEY = 'vault';
 
+/**
+ * `face` provides the key: enroll() creates face lock and returns a key,
+ * unlock() asks for face or fingerprint and returns it, mode() reports strength.
+ */
 export class VaultController extends EventTarget {
   #store;
   #clock;
-  #kdf;
   #backupKdf;
-  #session = null;
+  #face;
+  #key = null;
   #vault = null;
-  #pass;
   #codeTries;
 
   phase = 'loading';
   busy = false;
   message = '';
 
-  constructor(store, { clock = Date.now, kdf = LOCAL_KDF, backupKdf = BACKUP_KDF } = {}) {
+  constructor(store, face, { clock = Date.now, backupKdf = BACKUP_KDF } = {}) {
     super();
     this.#store = store;
+    this.#face = face;
     this.#clock = clock;
-    this.#kdf = kdf;
     this.#backupKdf = backupKdf;
-    this.#pass = new AttemptLimiter(store, 'passphrase', clock);
     this.#codeTries = new AttemptLimiter(store, 'code', clock);
   }
 
@@ -44,6 +46,11 @@ export class VaultController extends EventTarget {
 
   get backupOutdated() {
     return this.#vault ? backupOutdated(this.#vault) : true;
+  }
+
+  /** 'strong' or 'basic' (see shared/face.js). */
+  faceStrength() {
+    return this.#face.mode();
   }
 
   #set(phase, message = '') {
@@ -65,17 +72,22 @@ export class VaultController extends EventTarget {
     }
   }
 
+  #fail(message) {
+    this.message = message;
+    return false;
+  }
+
   async init() {
     try {
-      this.#set((await this.#store.get(RECORD_KEY)) ? 'locked' : 'setup');
+      const record = await this.#store.get(RECORD_KEY);
+      this.#set(!record ? 'setup' : record.format === FORMAT ? 'locked' : 'legacy');
     } catch {
       this.#set('error', 'This browser cannot store data privately. Try another browser.');
     }
   }
 
   async #save() {
-    const record = await seal(this.#session, FORMAT, this.#vault);
-    await this.#store.set(RECORD_KEY, record);
+    await this.#store.set(RECORD_KEY, await sealWithKey(this.#key, FORMAT, this.#vault));
   }
 
   async #update(changes) {
@@ -83,53 +95,42 @@ export class VaultController extends EventTarget {
     await this.#save();
   }
 
-  /** The text to paste into TBD Codes. Only while a session is unlocked. */
+  /** The key text for generating codes. Only while the vault is unlocked. */
   pairingCode() {
     if (!this.#vault) throw new UserError('Unlock the vault first');
     return encodePairing(fromB64(this.#vault.otpSecret), this.#vault.period);
   }
 
-  async create(passphrase, confirmation) {
+  /** Sets up face lock on this device and creates an empty vault. */
+  async create() {
     if (this.phase !== 'setup') return false;
-    checkPassphrase(passphrase, confirmation);
     return this.#guard(async () => {
-      const vault = newVault(toB64(randomBytes(32)), DEFAULT_PERIOD);
-      this.#session = await newSession(passphrase, this.#kdf);
-      this.#vault = vault;
+      const key = await this.#face.enroll();
+      this.#key = key;
+      this.#vault = newVault(toB64(randomBytes(32)), DEFAULT_PERIOD);
       await this.#save();
-      await this.#pass.reset();
       await this.#codeTries.reset();
-      this.#set('code', 'Vault created. Open TBD Codes, paste the pairing code, then enter the code it shows.');
-      return true;
-    });
-  }
-
-  async unlock(passphrase) {
-    if (this.phase !== 'locked') return false;
-    return this.#guard(async () => {
-      const wait = await this.#pass.waitSeconds();
-      if (wait > 0) return this.#fail(`Too many tries. Wait ${wait} seconds.`);
-      try {
-        const record = await this.#store.get(RECORD_KEY);
-        const { session, object } = await open(record, FORMAT, passphrase);
-        this.#session = session;
-        this.#vault = validateVault(object);
-      } catch (error) {
-        if (error instanceof UserError) {
-          const blocked = await this.#pass.fail();
-          return this.#fail(blocked ? `Too many tries. Wait ${blocked} seconds.` : 'Wrong passphrase.');
-        }
-        return this.#fail('Could not open the vault on this device. Restore a backup.');
-      }
-      await this.#pass.reset();
       this.#set('code', '');
       return true;
     });
   }
 
-  #fail(message) {
-    this.message = message;
-    return false;
+  async unlock() {
+    if (this.phase !== 'locked') return false;
+    return this.#guard(async () => {
+      try {
+        const key = await this.#face.unlock();
+        const object = await openWithKey(key, await this.#store.get(RECORD_KEY), FORMAT);
+        this.#vault = validateVault(object);
+        this.#key = key;
+      } catch (error) {
+        return this.#fail(
+          error instanceof UserError ? error.message : 'Could not open the vault on this device. Restore a backup.',
+        );
+      }
+      this.#set('code', '');
+      return true;
+    });
   }
 
   async verifyCode(input) {
@@ -147,7 +148,7 @@ export class VaultController extends EventTarget {
             ? `Too many tries. Wait ${blocked} seconds.`
             : result.reason === 'format'
               ? 'Enter all 8 digits.'
-              : 'Code did not match or already expired. Copy the new code and retry.',
+              : 'That code was not accepted. Enter a current code.',
         );
       }
       await this.#codeTries.reset();
@@ -160,7 +161,7 @@ export class VaultController extends EventTarget {
 
   lock() {
     if (this.phase !== 'open' && this.phase !== 'code') return;
-    this.#session = null;
+    this.#key = null;
     this.#vault = null;
     this.#set('locked', '');
   }
@@ -227,55 +228,28 @@ export class VaultController extends EventTarget {
     return (await restoreBackup(bytes, password)).entries.length;
   }
 
-  /** Replaces this device's vault with a backup, protected by a new passphrase. */
-  async importBackup(bytes, backupPassword, passphrase, confirmation) {
-    if (this.phase !== 'setup' && this.phase !== 'locked') {
+  /** Replaces this device's vault with a backup and sets up face lock again. */
+  async importBackup(bytes, backupPassword) {
+    if (this.phase !== 'setup' && this.phase !== 'locked' && this.phase !== 'legacy') {
       throw new UserError('Lock the vault before restoring a backup');
     }
-    checkPassphrase(passphrase, confirmation);
     return this.#guard(async () => {
       const restored = await restoreBackup(bytes, backupPassword);
-      const ready = {
-        ...restored,
-        lastBackupRevision: restored.revision,
-        lastAcceptedStep: -1,
-        lastAcceptedEnd: 0,
-      };
-      this.#session = await newSession(passphrase, this.#kdf);
-      this.#vault = ready;
+      const key = await this.#face.enroll();
+      this.#key = key;
+      this.#vault = { ...restored, lastBackupRevision: restored.revision, lastAcceptedStep: -1, lastAcceptedEnd: 0 };
       await this.#save();
-      await this.#pass.reset();
       await this.#codeTries.reset();
-      this.#set('code', 'Backup restored. Pair TBD Codes on this phone, then enter its code.');
+      this.#set('code', '');
       return true;
     });
   }
 
-  async changePassphrase(current, next, confirmation) {
-    this.#requireOpen();
-    checkPassphrase(next, confirmation);
-    const record = await this.#store.get(RECORD_KEY);
-    await open(record, FORMAT, current); // throws UserError if wrong
-    this.#session = await newSession(next, this.#kdf);
-    await this.#save();
-  }
-
-  /** Permanently removes the vault from this device. */
+  /** Permanently removes the vault and face lock from this device. */
   async eraseDevice() {
     await this.#store.clear();
-    this.#session = null;
+    this.#key = null;
     this.#vault = null;
     this.#set('setup', '');
   }
 }
-
-export function checkPassphrase(passphrase, confirmation) {
-  if (charCount(passphrase) < MIN_PASSPHRASE) {
-    throw new UserError(`Use at least ${MIN_PASSPHRASE} characters. A few random words works well.`);
-  }
-  if (confirmation !== undefined && passphrase !== confirmation) {
-    throw new UserError('The two passphrases do not match');
-  }
-}
-
-export { MAX_PERIOD, MIN_PERIOD };

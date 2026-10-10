@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
-import { createBackup, newSession, open, restoreBackup, seal } from '../shared/crypto.js';
+import { createBackup, newDeviceKey, openWithKey, restoreBackup, sealWithKey } from '../shared/crypto.js';
 import { newVault, validateVault } from '../shared/model.js';
 import { code, codeForCounter, secondsLeft, step, verify } from '../shared/otp.js';
 import { decodePairing, encodePairing } from '../shared/pairing.js';
@@ -81,20 +81,18 @@ test('pairing code: round trip, tolerance, typo detection', () => {
   assert.throws(() => decodePairing(text.slice(0, 30)), FormatException);
 });
 
-test('records: round trip, wrong passphrase, tampering', async () => {
-  const session = await newSession('correct horse battery', FAST_KDF);
-  const record = await seal(session, 'T-1', { secret: 'value' });
+test('records: round trip, wrong key, tampering', async () => {
+  const key = await newDeviceKey();
+  const record = await sealWithKey(key, 'T-1', { secret: 'value' });
   assert.ok(!JSON.stringify(record).includes('value'));
-  assert.deepEqual((await open(record, 'T-1', 'correct horse battery')).object, { secret: 'value' });
-  await assert.rejects(open(record, 'T-1', 'wrong passphrase!!'), UserError);
-  await assert.rejects(open(record, 'T-2', 'correct horse battery'), FormatException);
+  assert.deepEqual(await openWithKey(key, record, 'T-1'), { secret: 'value' });
+  await assert.rejects(openWithKey(await newDeviceKey(), record, 'T-1'), UserError);
+  await assert.rejects(openWithKey(key, record, 'T-2'), FormatException);
   const flipped = fromB64(record.ct);
   flipped[0] ^= 1;
-  await assert.rejects(open({ ...record, ct: toB64(flipped) }, 'T-1', 'correct horse battery'), UserError);
-  await assert.rejects(
-    open({ ...record, kdf: { alg: 'argon2id', m: 4, t: 1, p: 1 } }, 'T-1', 'x'),
-    FormatException,
-  );
+  await assert.rejects(openWithKey(key, { ...record, ct: toB64(flipped) }, 'T-1'), UserError);
+  await assert.rejects(openWithKey(key, { ...record, nonce: 'AAAA' }, 'T-1'), FormatException);
+  assert.notEqual((await sealWithKey(key, 'T-1', { a: 1 })).nonce, (await sealWithKey(key, 'T-1', { a: 1 })).nonce);
 });
 
 test('backup: round trip, unreadable without the password', async () => {

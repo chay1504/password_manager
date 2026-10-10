@@ -4,12 +4,14 @@ import {
   clearClipboard, confirmDialog, copyText, formatDate, h, installNote, isIos, isStandalone, mount,
   openDialog, pickFile, randomPassword, registerServiceWorker, saveFile, toast, watchVisibility,
 } from '../shared/ui.js';
+import { FaceLock } from '../shared/face.js';
 import { FormatException, UserError } from '../shared/util.js';
-import { MIN_PASSPHRASE, VaultController } from './controller.js';
+import { VaultController } from './controller.js';
 
 const root = document.getElementById('app');
 const store = indexedDbStore('tbd-vault');
-const vault = new VaultController(store);
+const face = new FaceLock(store, 'TBD Vault');
+const vault = new VaultController(store, face);
 
 const IDLE_LOCK_MS = 2 * 60 * 1000;
 const CODE_STEP_KEEP_MS = 60 * 1000;
@@ -91,38 +93,28 @@ function installScreen() {
 }
 
 function setupScreen() {
-  const pass = passwordField('Vault passphrase', { name: 'new', autocomplete: 'new-password', minlength: MIN_PASSPHRASE });
-  const confirm = passwordField('Repeat passphrase', { name: 'confirm', autocomplete: 'new-password' });
-  const form = h('form', { class: 'card', onSubmit: async (event) => {
-    event.preventDefault();
-    await attempt(() => vault.create(pass.querySelector('input').value, confirm.querySelector('input').value));
-  } },
-    h('p', { class: 'muted' }, `Your passphrase encrypts everything on this device. Use at least ${MIN_PASSPHRASE} characters, such as a few random words. It cannot be recovered. If you forget it, only an encrypted backup can get you back in.`),
-    pass, confirm, msgLine(),
-    h('button', { class: 'btn primary block', type: 'submit' }, 'Create vault'));
   return h('main', { class: 'screen' },
     brand('TBD Vault'),
     h('h1', null, 'Your passwords, kept on this device only'),
     h('p', { class: 'muted' }, 'No account, no server. Works offline once installed.'),
-    form,
+    h('div', { class: 'card' },
+      h('p', { class: 'muted' }, 'Face lock (face, fingerprint or your phone PIN) protects everything here. You will be asked for it each time you open the vault.'),
+      msgLine(),
+      h('button', { class: 'btn primary block', type: 'button', onClick: () => attempt(() => vault.create()) }, 'Set up face lock and create vault')),
     h('button', { class: 'btn ghost block', type: 'button', onClick: () => { ui.restore = true; render(); } }, 'Restore from an encrypted backup'),
     installNote('TBD Vault'));
 }
 
 function restoreScreen() {
   const backupPass = passwordField('Backup password', { name: 'backup' });
-  const pass = passwordField('New vault passphrase for this device', { name: 'new', autocomplete: 'new-password' });
-  const confirm = passwordField('Repeat passphrase', { name: 'confirm', autocomplete: 'new-password' });
   const fileLabel = h('p', { class: 'hint' }, ui.restoreFile ? `Selected: ${ui.restoreFile.name}` : 'No file chosen');
   const form = h('form', { class: 'card', onSubmit: async (event) => {
     event.preventDefault();
     await attempt(async () => {
       if (!ui.restoreFile) throw new UserError('Choose your .tbdbackup file first');
       if (vault.phase === 'locked' && !(await confirmDialog('Replace this vault?', 'This erases the vault currently on this device and replaces it with the backup.', 'Replace', { danger: true }))) return;
-      const ok = await vault.importBackup(ui.restoreFile.bytes, backupPass.querySelector('input').value,
-        pass.querySelector('input').value, confirm.querySelector('input').value);
+      const ok = await vault.importBackup(ui.restoreFile.bytes, backupPass.querySelector('input').value);
       if (ok) ui.restoreFile = null;
-      else setMessage(vault.message);
     });
   } },
     h('button', { class: 'btn secondary', type: 'button', onClick: () => attempt(async () => {
@@ -132,7 +124,9 @@ function restoreScreen() {
       ui.restoreFile = picked;
       fileLabel.textContent = `Selected: ${picked.name}`;
     }) }, 'Choose backup file'),
-    fileLabel, backupPass, pass, confirm, msgLine(),
+    fileLabel, backupPass,
+    h('p', { class: 'hint' }, 'After restoring, you will set up face lock on this device.'),
+    msgLine(),
     h('button', { class: 'btn primary block', type: 'submit' }, 'Restore'));
   return h('main', { class: 'screen' },
     brand('TBD Vault'),
@@ -142,35 +136,38 @@ function restoreScreen() {
 }
 
 function lockedScreen() {
-  const pass = passwordField('Vault passphrase', { name: 'passphrase', autocomplete: 'current-password' });
-  const form = h('form', { class: 'card', onSubmit: async (event) => {
-    event.preventDefault();
-    const input = pass.querySelector('input');
-    const ok = await attempt(() => vault.unlock(input.value));
-    if (!ok) { input.value = ''; setMessage(vault.message); input.focus(); }
-  } }, pass, msgLine(), h('button', { class: 'btn primary block', type: 'submit' }, 'Unlock'));
   return h('main', { class: 'screen' },
     brand('TBD Vault'),
     h('h1', null, 'Vault locked'),
-    form,
+    h('div', { class: 'card' },
+      msgLine(),
+      h('button', { class: 'btn primary block', type: 'button', onClick: async () => {
+        const ok = await attempt(() => vault.unlock());
+        if (!ok) setMessage(vault.message);
+      } }, 'Unlock with face')),
     h('div', { class: 'row wrap' },
       h('button', { class: 'link muted', type: 'button', onClick: () => { ui.restore = true; render(); } }, 'Restore from backup'),
       h('button', { class: 'link muted', type: 'button', onClick: eraseDevice }, 'Erase this device')),
     installNote('TBD Vault'));
 }
 
-function pairingSheet() {
-  return openDialog('Pairing code', () => {
+function legacyScreen() {
+  return h('main', { class: 'screen' },
+    brand('TBD Vault'),
+    h('h1', null, 'Older data found'),
+    h('p', { class: 'banner' }, 'This device holds data from an earlier test version that cannot be opened by this one. Restore a backup, or erase it and start again.'),
+    h('button', { class: 'btn secondary block', type: 'button', onClick: () => { ui.restore = true; render(); } }, 'Restore from an encrypted backup'),
+    h('button', { class: 'btn danger block', type: 'button', onClick: eraseDevice }, 'Erase and start again'));
+}
+
+function keySheet() {
+  return openDialog('Security key', () => {
     let text;
     try { text = vault.pairingCode(); } catch (error) { return h('p', { class: 'error' }, friendly(error)); }
     return [
-      h('ol', { class: 'steps' },
-        h('li', null, 'Tap Copy below.'),
-        h('li', null, 'Open TBD Codes and choose “Pair with Vault”.'),
-        h('li', null, 'Paste the pairing code and set an app passphrase there.')),
-      h('div', { class: 'pairing mono', 'aria-label': 'Pairing code' }, text),
-      h('button', { class: 'btn primary', type: 'button', onClick: () => copyText(text, 'Pairing code', 60000) }, 'Copy pairing code'),
-      h('p', { class: 'hint' }, 'This code lets an app produce your login codes. Do not share it. Once paired, you do not need it again, except to pair a new device.'),
+      h('div', { class: 'pairing mono', 'aria-label': 'Security key' }, text),
+      h('button', { class: 'btn primary', type: 'button', onClick: () => copyText(text, 'Security key', 60000) }, 'Copy security key'),
+      h('p', { class: 'hint' }, 'Keep this private.'),
     ];
   });
 }
@@ -196,16 +193,13 @@ function codeScreen() {
   });
   return h('main', { class: 'screen' },
     brand('TBD Vault'),
-    h('h1', null, 'Enter your code'),
-    ui.notice ? h('p', { class: 'banner ok' }, ui.notice) : null,
+    h('h1', null, 'Security code'),
     h('div', { class: 'card' },
-      h('ol', { class: 'steps' },
-        h('li', null, 'Open TBD Codes and tap Copy on the code.'),
-        h('li', null, 'Come back here and paste it. It changes every few seconds, so be quick.')),
+      h('p', { class: 'muted' }, 'Enter your current 8-digit code.'),
       input, msgLine(),
       h('button', { class: 'btn primary block', type: 'button', onClick: submit }, 'Open vault')),
     h('div', { class: 'row wrap' },
-      h('button', { class: 'btn secondary small', type: 'button', onClick: pairingSheet }, 'Show pairing code'),
+      h('button', { class: 'btn secondary small', type: 'button', onClick: keySheet }, 'Show security key'),
       h('button', { class: 'btn ghost small', type: 'button', onClick: () => vault.lock() }, 'Lock')));
 }
 
@@ -406,28 +400,19 @@ function settingsSheet() {
       ui.graceSeconds = Number(event.target.value);
       await store.set('prefs', { graceSeconds: ui.graceSeconds });
     } }, GRACE_CHOICES.map(([value, label]) => h('option', { value, selected: value === ui.graceSeconds }, label)));
-
-    const current = passwordField('Current passphrase');
-    const next = passwordField('New passphrase', { autocomplete: 'new-password' });
-    const again = passwordField('Repeat new passphrase', { autocomplete: 'new-password' });
-    const msg = h('p', { class: 'error', role: 'alert' });
-    const change = h('form', { class: 'stack', onSubmit: async (event) => {
-      event.preventDefault();
-      msg.textContent = ''; msg.className = 'error';
-      try {
-        await vault.changePassphrase(current.querySelector('input').value, next.querySelector('input').value, again.querySelector('input').value);
-        msg.className = 'banner ok'; msg.textContent = 'Passphrase changed.';
-        for (const f of [current, next, again]) f.querySelector('input').value = '';
-      } catch (error) { msg.textContent = friendly(error); }
-    } }, current, next, again, msg, h('button', { class: 'btn secondary', type: 'submit' }, 'Change passphrase'));
-
+    const strength = h('p', { class: 'hint' }, 'Face lock: checking…');
+    vault.faceStrength().then((mode) => {
+      strength.textContent = mode === 'strong'
+        ? 'Face lock: strong. The key that protects your data comes from your face or fingerprint.'
+        : 'Face lock: basic. This browser cannot tie the key to your face, so it works as a screen lock.';
+    });
     return [
-      h('button', { class: 'btn secondary', type: 'button', onClick: () => { close(); pairingSheet(); } }, 'Show pairing code'),
+      h('button', { class: 'btn secondary', type: 'button', onClick: () => { close(); keySheet(); } }, 'Show security key'),
       h('label', { class: 'field' }, 'Lock when I leave the app', grace),
-      h('h3', null, 'Passphrase'), change,
+      strength,
       h('h3', null, 'Danger zone'),
       h('button', { class: 'btn danger', type: 'button', onClick: async () => { close(); await eraseDevice(); } }, 'Erase this vault from the device'),
-      h('p', { class: 'hint' }, 'TBD Vault 0.1. Everything stays on this device. The app makes no network requests.'),
+      h('p', { class: 'hint' }, 'TBD Vault 0.2. Everything stays on this device. The app makes no network requests.'),
     ];
   });
 }
@@ -449,6 +434,7 @@ function render() {
   switch (vault.phase) {
     case 'setup': return mount(root, ui.restore ? restoreScreen() : setupScreen());
     case 'locked': return mount(root, ui.restore ? restoreScreen() : lockedScreen());
+    case 'legacy': return mount(root, ui.restore ? restoreScreen() : legacyScreen());
     case 'code': return mount(root, codeScreen());
     case 'open': return mount(root, openScreen());
     case 'error':
@@ -466,7 +452,7 @@ vault.addEventListener('change', () => {
     if (vault.phase !== 'open') {
       Object.assign(ui, { selectedId: null, adding: false, editing: false, showPassword: false, search: '' });
     }
-    if (vault.phase !== 'setup' && vault.phase !== 'locked') ui.restore = false;
+    if (!['setup', 'locked', 'legacy'].includes(vault.phase)) ui.restore = false;
     render();
   } else if (vault.message !== ui.notice) {
     setMessage(vault.message);

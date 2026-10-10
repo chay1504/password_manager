@@ -31,19 +31,21 @@ Status date: 2026-10-09. This is a review of the source plus automated tests. It
 Source and automated-test review plus one real-browser run. **Not an independent audit; no real-phone testing.**
 
 ## Checked
-- Vault and Codes data are stored only as encrypted records (Argon2id 64 MB x 3, AES-256-GCM, fresh nonce per save). In the browser run, the stored vault contained none of the account name, username or site, and localStorage was empty.
-- The vault key is non-extractable and kept in memory only while unlocked; locking drops it.
-- Code entry: 8 digits, current interval only (any 5 to 10 s setting), no replay of an accepted code (also after lock and restart), 5 misses lead to a 30 s wait that doubles each repeat (up to 10 min). The same limiter protects the passphrase screens.
+- Vault and Codes data are stored only as AES-256-GCM encrypted records (fresh nonce per save). In the browser run, the stored vault contained none of the account name, username or site, and localStorage was empty. Backup files use Argon2id (64 MB x 3) plus AES-256-GCM.
+- Unlock is by face lock (platform passkey, user verification required). Strong mode derives the key from the passkey's PRF output; basic mode uses a non-extractable browser key as a screen lock (shown in Settings). The key is held in memory only while unlocked; locking drops it. No typed passphrase exists in either app.
+- Code entry: 8 digits, current interval only (any 5 to 10 s setting), no replay of an accepted code (also after lock and restart), 5 misses lead to a 30 s wait that doubles each repeat (up to 10 min).
+- Screens in each app never name the other app. The one link, copying the security key, is documented outside the apps in `web/README.md`.
 - Backups: tamper tests on every field, truncated and garbage files, oversize and over-heavy key settings are refused. A real backup from the earlier Flutter code opens (cross-implementation test).
 - Pages cannot talk to other servers: strict Content-Security-Policy (`connect-src 'self'`, no inline scripts or styles), no third-party scripts, fonts or analytics; the build fails if any remote URL appears.
 - Account text is always inserted as text, never as HTML.
 
 ## Known limits
-- No device keystore on the web, so security rests on the passphrase. A weak passphrase is the main risk.
+- Without the PRF feature (basic mode) face lock is a screen lock, not part of the encryption: someone able to run code in the page's browser profile could use the stored key. Strong mode needs a recent iPhone or Android browser.
+- Deleting the passkey or clearing browser data makes the vault unreadable on that device; the backup file is the recovery.
 - Clipboard cannot be cleared from the background; the app-switcher preview cannot be guaranteed blank on iPhone.
-- The pairing code, shown on screen and copied to the clipboard, lets anyone who has it generate login codes. It does not open the vault without the passphrase.
+- The security key, shown on screen and copied to the clipboard, lets anyone who has it generate login codes. It does not open the vault without face lock.
 - Browsers can delete site data under storage pressure or when the user clears it; the app asks for persistent storage, but a recent backup is the real protection.
 
 ## Not yet verified
-- Real iPhone and Android install, offline use through the service worker, share-sheet backup, app-switcher behaviour.
+- A real face or fingerprint prompt (only a simulated one was used), strong mode on iPhone, real iPhone and Android install, offline use through the service worker, share-sheet backup, app-switcher behaviour.
 - Hosting must actually send the security headers (`web/vercel.json` for Git-linked Vercel projects, or the generated `dist/*/vercel.json` and `_headers` for manual deployment).

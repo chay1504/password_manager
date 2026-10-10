@@ -4,12 +4,14 @@ import {
   confirmDialog, copyText, h, installNote, isIos, isStandalone, mount, openDialog,
   registerServiceWorker, svg, toast, watchVisibility,
 } from '../shared/ui.js';
+import { FaceLock } from '../shared/face.js';
 import { FormatException, UserError } from '../shared/util.js';
-import { CodesController, MIN_APP_PASSPHRASE } from './controller.js';
+import { CodesController } from './controller.js';
 
 const root = document.getElementById('app');
 const store = indexedDbStore('tbd-codes');
-const codes = new CodesController(store);
+const face = new FaceLock(store, 'TBD Codes');
+const codes = new CodesController(store, face);
 
 const IDLE_LOCK_MS = 2 * 60 * 1000;
 const GRACE_CHOICES = [[0, 'Immediately'], [30, 'After 30 seconds'], [60, 'After 1 minute']];
@@ -44,19 +46,13 @@ async function attempt(action) {
 const msgLine = () => h('p', { id: 'msg', class: 'error', role: 'alert' }, codes.message || '');
 const brand = () => h('div', { class: 'brand' }, h('img', { src: 'icons/icon.svg', alt: '', width: 44, height: 44 }), h('b', null, 'TBD Codes'));
 
-function passwordField(label, props = {}) {
-  return h('label', { class: 'field' }, label, h('input', {
-    type: 'password', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', ...props,
-  }));
-}
-
 /* -------------------------------- Screens ----------------------------- */
 
 function installScreen() {
   return h('main', { class: 'screen' },
     brand(),
     h('h1', null, 'Add to Home Screen first'),
-    h('p', null, 'On iPhone, a website and the app on your Home Screen keep separate storage. Install first, then pair inside the installed app, or the pairing will not carry over.'),
+    h('p', null, 'On iPhone, a website and the app on your Home Screen keep separate storage. Install first, then add your key inside the installed app, or it will not carry over.'),
     h('ol', { class: 'steps' },
       h('li', null, 'Tap the Share button in Safari.'),
       h('li', null, 'Choose “Add to Home Screen”, then Add.'),
@@ -66,48 +62,48 @@ function installScreen() {
 }
 
 function setupScreen() {
-  const pairing = h('textarea', {
+  const key = h('textarea', {
     rows: '3', placeholder: 'TBD1-…', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false',
-    'aria-label': 'Pairing code', class: 'mono',
+    'aria-label': 'Security key', class: 'mono',
   });
-  const pass = passwordField('App passphrase', { autocomplete: 'new-password' });
-  const again = passwordField('Repeat passphrase', { autocomplete: 'new-password' });
   const paste = h('button', { class: 'btn secondary small', type: 'button', onClick: async () => {
-    try { pairing.value = await navigator.clipboard.readText(); } catch { toast('Paste it into the box by hand.'); }
+    try { key.value = await navigator.clipboard.readText(); } catch { toast('Paste it into the box by hand.'); }
   } }, 'Paste from clipboard');
   const form = h('form', { class: 'card', onSubmit: async (event) => {
     event.preventDefault();
-    await attempt(() => codes.pair(pairing.value, pass.querySelector('input').value, again.querySelector('input').value));
+    await attempt(() => codes.add(key.value));
   } },
-    h('ol', { class: 'steps' },
-      h('li', null, 'In TBD Vault, open Settings and tap “Show pairing code”, then Copy.'),
-      h('li', null, 'Paste the code below.'),
-      h('li', null, 'Choose a passphrase that protects this app.')),
-    h('label', { class: 'field' }, 'Pairing code', pairing), paste,
-    pass, again, msgLine(),
-    h('button', { class: 'btn primary block', type: 'submit' }, 'Pair with Vault'));
+    h('label', { class: 'field' }, 'Security key', key), paste,
+    h('p', { class: 'hint' }, 'Face lock (face, fingerprint or your phone PIN) will protect it.'),
+    msgLine(),
+    h('button', { class: 'btn primary block', type: 'submit' }, 'Save and set up face lock'));
   return h('main', { class: 'screen' },
     brand(),
-    h('h1', null, 'Pair with your vault'),
+    h('h1', null, 'Add your security key'),
     form,
-    h('p', { class: 'hint' }, `Use at least ${MIN_APP_PASSPHRASE} characters. This only protects the codes on this device.`),
     installNote('TBD Codes'));
 }
 
 function lockedScreen() {
-  const pass = passwordField('App passphrase', { autocomplete: 'current-password' });
-  const form = h('form', { class: 'card', onSubmit: async (event) => {
-    event.preventDefault();
-    const input = pass.querySelector('input');
-    const ok = await attempt(() => codes.unlock(input.value));
-    if (!ok) { input.value = ''; setMessage(codes.message); input.focus(); }
-  } }, pass, msgLine(), h('button', { class: 'btn primary block', type: 'submit' }, 'Show code'));
   return h('main', { class: 'screen' },
     brand(),
-    h('h1', null, 'Codes locked'),
-    form,
-    h('button', { class: 'link muted', type: 'button', onClick: eraseDevice }, 'Remove pairing from this device'),
+    h('h1', null, 'Locked'),
+    h('div', { class: 'card' },
+      msgLine(),
+      h('button', { class: 'btn primary block', type: 'button', onClick: async () => {
+        const ok = await attempt(() => codes.unlock());
+        if (!ok) setMessage(codes.message);
+      } }, 'Unlock with face')),
+    h('button', { class: 'link muted', type: 'button', onClick: eraseDevice }, 'Remove security key from this device'),
     installNote('TBD Codes'));
+}
+
+function legacyScreen() {
+  return h('main', { class: 'screen' },
+    brand(),
+    h('h1', null, 'Older data found'),
+    h('p', { class: 'banner' }, 'This device holds data from an earlier test version that cannot be opened by this one. Erase it and add your security key again.'),
+    h('button', { class: 'btn danger block', type: 'button', onClick: eraseDevice }, 'Erase and start again'));
 }
 
 function showScreen() {
@@ -175,8 +171,7 @@ function showScreen() {
     ring,
     copy,
     h('div', { class: 'card' },
-      h('div', { class: 'field' }, 'New code every (seconds)', segments),
-      h('p', { class: 'hint' }, 'TBD Vault accepts the code whichever interval you pick here.')),
+      h('div', { class: 'field' }, 'New code every (seconds)', segments)),
     msgLine(),
     h('div', { class: 'row wrap' },
       h('button', { class: 'btn secondary small', type: 'button', onClick: () => codes.lock() }, 'Lock'),
@@ -189,20 +184,27 @@ function settingsSheet() {
       ui.graceSeconds = Number(event.target.value);
       await store.set('prefs', { graceSeconds: ui.graceSeconds });
     } }, GRACE_CHOICES.map(([value, label]) => h('option', { value, selected: value === ui.graceSeconds }, label)));
+    const strength = h('p', { class: 'hint' }, 'Face lock: checking…');
+    codes.faceStrength().then((mode) => {
+      strength.textContent = mode === 'strong'
+        ? 'Face lock: strong. The key that protects your data comes from your face or fingerprint.'
+        : 'Face lock: basic. This browser cannot tie the key to your face, so it works as a screen lock.';
+    });
     return [
       h('label', { class: 'field' }, 'Lock when I leave the app', grace),
-      h('p', { class: 'hint' }, 'A short delay lets you copy a code, switch to TBD Vault and back without typing your passphrase each time.'),
-      h('button', { class: 'btn danger', type: 'button', onClick: async () => { close(); await eraseDevice(); } }, 'Remove pairing from this device'),
-      h('p', { class: 'hint' }, 'TBD Codes 0.1. Everything stays on this device. The app makes no network requests.'),
+      h('p', { class: 'hint' }, 'A short delay avoids unlocking again each time you switch away and back.'),
+      strength,
+      h('button', { class: 'btn danger', type: 'button', onClick: async () => { close(); await eraseDevice(); } }, 'Remove security key from this device'),
+      h('p', { class: 'hint' }, 'TBD Codes 0.2. Everything stays on this device. The app makes no network requests.'),
     ];
   });
 }
 
 async function eraseDevice() {
-  const ok = await confirmDialog('Remove pairing?', 'This deletes the saved pairing from this device. You can pair again from TBD Vault’s Settings.', 'Remove', { danger: true });
+  const ok = await confirmDialog('Remove security key?', 'This deletes the saved key from this device. You will need the key again to use this app.', 'Remove', { danger: true });
   if (!ok) return;
   await codes.eraseDevice();
-  toast('Pairing removed.');
+  toast('Security key removed.');
 }
 
 /* ------------------------------- Render ------------------------------- */
@@ -215,6 +217,7 @@ function render() {
   switch (codes.phase) {
     case 'setup': return mount(root, setupScreen());
     case 'locked': return mount(root, lockedScreen());
+    case 'legacy': return mount(root, legacyScreen());
     case 'show': return mount(root, showScreen());
     case 'error': return mount(root, h('main', { class: 'screen' }, brand(), h('p', { class: 'banner' }, codes.message)));
     default: return mount(root, h('main', { class: 'screen center' }, h('div', { class: 'spinner', role: 'status', 'aria-label': 'Loading' })));
