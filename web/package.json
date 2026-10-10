@@ -1,0 +1,13 @@
+{
+  "name": "tbd-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "TBD Vault and TBD Codes as two installable offline web apps (PWAs)",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
+    "serve": "node scripts/serve.mjs"
+  },
+  "engines": { "node": ">=20" }
+}

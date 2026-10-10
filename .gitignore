@@ -1,0 +1,22 @@
+**/.dart_tool/
+**/.flutter-plugins-dependencies
+**/build/
+**/.gradle/
+**/Pods/
+**/DerivedData/
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+*.tbd
+*.tbdbackup
+key.properties
+
+# Generated or machine-specific
+web/dist/
+**/local.properties
+**/.idea/
+*.iml
+**/ios/Flutter/ephemeral/
+design/emulator-*
+node_modules/

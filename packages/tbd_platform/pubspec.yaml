@@ -1,0 +1,12 @@
+name: tbd_platform
+description: Device-protected secrets and private two-app pairing bridge.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_secure_storage: ^11.2.0

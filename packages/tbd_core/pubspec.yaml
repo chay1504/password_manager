@@ -1,0 +1,14 @@
+name: tbd_core
+description: Offline vault format, encryption, backup, and short-lived codes for TBD apps.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  crypto: ^3.0.6
+  cryptography: ^2.9.0
+
+dev_dependencies:
+  test: ^1.26.3

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="TBD Codes mark">
+  <circle cx="512" cy="512" r="292" fill="none" stroke="#f4f1ec" stroke-width="54" stroke-dasharray="250 70" transform="rotate(-90 512 512)"/>
+  <path d="M512 317v195l133 90" fill="none" stroke="#080808" stroke-width="62" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="512" cy="512" r="35" fill="#f4f1ec"/>
+</svg>
